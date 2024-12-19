@@ -40,7 +40,7 @@ function Update-Config-Var {
     if (-not(Test-Path -Path $ConfigPath -PathType Leaf)) {
         throw "**** Configuration file '$ConfigPath' does not exist"
     }
-  
+
     if ($MaskList.Contains($VarName) -eq $true -And [string]::IsNullOrWhitespace($VarValue) -ne $true) {
         Write-Host -NoNewline "** Updating '$ConfigPath' parameter ""$VarName"": '****'. Enable DEBUG_MODE to view value ..."
     }
@@ -50,12 +50,12 @@ function Update-Config-Var {
 
     if ([string]::IsNullOrWhitespace($VarValue)) {
         if ((Get-Content $ConfigPath | %{$_ -match "^$VarName="}) -contains $true) {
-            (Get-Content $ConfigPath) | 
+            (Get-Content $ConfigPath) |
                 Where-Object {$_ -notmatch "^$VarName=" } |
                 Set-Content $ConfigPath
          }
 
-        Write-Host "removed"    
+        Write-Host "removed"
         return
     }
 
@@ -64,7 +64,7 @@ function Update-Config-Var {
         Write-Host "undefined"
         return
     }
-  
+
     if ($VarName -match '^TLS.*File$') {
         $VarValue="$ZabbixUserHomeDir\enc\$VarValue"
     }
@@ -74,8 +74,19 @@ function Update-Config-Var {
 
         Write-Host updated
     }
+    elseif ((Get-Content $ConfigPath | select-string -pattern "^[#;] $VarName=").length -gt 1) {
+        (Get-Content $ConfigPath) |
+            Foreach-Object {
+                $_
+                if ($_ -match "^[#;] $VarName=$") {
+                    "$VarName=$VarValue"
+                }
+            } | Set-Content $ConfigPath
+
+        Write-Host "added first occurrence"
+    }
     elseif ((Get-Content $ConfigPath | select-string -pattern "^[#;] $VarName=").length -gt 0) {
-        (Get-Content $ConfigPath) | 
+        (Get-Content $ConfigPath) |
             Foreach-Object {
                 $_
                 if ($_ -match "^[#;] $VarName=") {
@@ -86,7 +97,7 @@ function Update-Config-Var {
         Write-Host "added"
     }
     else {
-	Add-Content -Path $ConfigPath -Value "$VarName=$VarValue"
+    Add-Content -Path $ConfigPath -Value "$VarName=$VarValue"
         Write-Host "added at the end"
     }
 }
@@ -109,9 +120,9 @@ function Update-Config-Multiple-Var {
 }
 
 function Prepare-Zbx-Agent-Config {
-    Write-Host "** Preparing Zabbix agent configuration file"
+    Write-Host "** Preparing Zabbix agent 2 configuration file"
 
-    $ZbxAgentConfig="$ZabbixConfigDir\zabbix_agent2.win.conf"
+    $ZbxAgentConfig="$ZabbixConfigDir\zabbix_agent2.conf"
 
     if ([string]::IsNullOrWhitespace($env:ZBX_PASSIVESERVERS)) {
         $env:ZBX_PASSIVESERVERS=""
@@ -136,7 +147,6 @@ function Prepare-Zbx-Agent-Config {
     Update-Config-Var $ZbxAgentConfig "LogFileSize"
     Update-Config-Var $ZbxAgentConfig "DebugLevel" "$env:ZBX_DEBUGLEVEL"
     Update-Config-Var $ZbxAgentConfig "SourceIP"
-    Update-Config-Var $ZbxAgentConfig "LogRemoteCommands" "$env:ZBX_LOGREMOTECOMMANDS"
 
     if ([string]::IsNullOrWhitespace($env:ZBX_PASSIVE_ALLOW)) {
         $env:ZBX_PASSIVE_ALLOW="true"
@@ -164,6 +174,7 @@ function Prepare-Zbx-Agent-Config {
     else {
         Update-Config-Var $ZbxAgentConfig "ServerActive"
     }
+    Update-Config-Var $ZbxAgentConfig "ForceActiveChecksOnStart" "$env:ZBX_FORCEACTIVECHECKSONSTART"
 
     if ([string]::IsNullOrWhitespace($env:ZBX_ENABLEPERSISTENTBUFFER)) {
         $env:ZBX_ENABLEPERSISTENTBUFFER="true"
@@ -195,13 +206,13 @@ function Prepare-Zbx-Agent-Config {
     Update-Config-Var $ZbxAgentConfig "RefreshActiveChecks" "$env:ZBX_REFRESHACTIVECHECKS"
     Update-Config-Var $ZbxAgentConfig "BufferSend" "$env:ZBX_BUFFERSEND"
     Update-Config-Var $ZbxAgentConfig "BufferSize" "$env:ZBX_BUFFERSIZE"
-    Update-Config-Var $ZbxAgentConfig "MaxLinesPerSecond" "$env:ZBX_MAXLINESPERSECOND"
     # Please use include to enable Alias feature
 #    update_config_multiple_var $ZBX_AGENT_CONFIG "Alias" $env:ZBX_ALIAS
     # Please use include to enable Perfcounter feature
 #    update_config_multiple_var $ZBX_AGENT_CONFIG "PerfCounter" $env:ZBX_PERFCOUNTER
     Update-Config-Var $ZbxAgentConfig "Timeout" "$env:ZBX_TIMEOUT"
-    Update-Config-Var $ZbxAgentConfig "Include" "$ZabbixConfigDir\zabbix_agentd.d\"
+    Update-Config-Var $ZbxAgentConfig "Include" ".\zabbix_agent2.d\plugins.d\*.conf"
+    Update-Config-Var $ZbxAgentConfig "Include" ".\zabbix_agentd.d\*.conf" $true
     Update-Config-Var $ZbxAgentConfig "UnsafeUserParameters" "$env:ZBX_UNSAFEUSERPARAMETERS"
     Update-Config-Var $ZbxAgentConfig "UserParameterDir" "$ZabbixUserHomeDir\user_scripts\"
     Update-Config-Var $ZbxAgentConfig "TLSConnect" "$env:ZBX_TLSCONNECT"
@@ -226,9 +237,19 @@ function Prepare-Zbx-Agent-Config {
 
 }
 
+function Prepare-Zbx-Agent-Plugins-Config {
+    Write-Host "** Preparing Zabbix agent 2 (plugins) configuration files"
+
+    Update-Config-Var "$ZabbixConfigDir\zabbix_agent2.d\plugins.d\mongodb.conf" "Plugins.MongoDB.System.Path" "$ZabbixUserHomeDir\zabbix-agent2-plugin\mongodb.exe"
+    Update-Config-Var "$ZabbixConfigDir\zabbix_agent2.d\plugins.d\postgresql.conf" "Plugins.PostgreSQL.System.Path" "$ZabbixUserHomeDir\zabbix-agent2-plugin\postgresql.exe"
+    Update-Config-Var "$ZabbixConfigDir\zabbix_agent2.d\plugins.d\mssql.conf" "Plugins.MSSQL.System.Path" "$ZabbixUserHomeDir\zabbix-agent2-plugin\mssql.exe"
+    Update-Config-Var "$ZabbixConfigDir\zabbix_agent2.d\plugins.d\ember.conf" "Plugins.EmberPlus.System.Path" "$ZabbixUserHomeDir\zabbix-agent2-plugin\ember-plus.exe"
+}
+
 function PrepareAgent {
-    Write-Host "** Preparing Zabbix agent"
+    Write-Host "** Preparing Zabbix agent 2"
     Prepare-Zbx-Agent-Config
+    Prepare-Zbx-Agent-Plugins-Config
 }
 
 $commandArgs=$args

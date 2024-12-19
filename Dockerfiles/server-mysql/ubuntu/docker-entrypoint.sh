@@ -14,6 +14,11 @@ fi
 ZABBIX_USER_HOME_DIR="/var/lib/zabbix"
 # Configuration files directory
 ZABBIX_ETC_DIR="/etc/zabbix"
+# Internal directory for TLS related files, used when TLS*File specified as plain text values
+ZABBIX_INTERNAL_ENC_DIR="${ZABBIX_USER_HOME_DIR}/enc_internal"
+
+: ${DB_CHARACTER_SET:="utf8mb4"}
+: ${DB_CHARACTER_COLLATE:="utf8mb4_bin"}
 
 # usage: file_env VAR [DEFAULT]
 # as example: file_env 'MYSQL_PASSWORD' 'zabbix'
@@ -134,10 +139,26 @@ update_config_multiple_var() {
     done
 }
 
+file_process_from_env() {
+    local config_path=$1
+    local var_name=$2
+    local file_name=$3
+    local var_value=$4
+
+    if [ ! -z "$var_value" ]; then
+        echo -n "$var_value" > "${ZABBIX_INTERNAL_ENC_DIR}/$var_name"
+        file_name="${ZABBIX_INTERNAL_ENC_DIR}/${var_name}"
+    fi
+    update_config_var $config_path "$var_name" "$file_name"
+}
+
 # Check prerequisites for MySQL database
 check_variables_mysql() {
-    : ${DB_SERVER_HOST:="mysql-server"}
-    : ${DB_SERVER_PORT:="3306"}
+    if [ ! -n "${DB_SERVER_SOCKET}" ]; then
+        : ${DB_SERVER_HOST:="mysql-server"}
+        : ${DB_SERVER_PORT:="3306"}
+    fi
+
     USE_DB_ROOT_USER=false
     CREATE_ZBX_DB_USER=false
     file_env MYSQL_USER
@@ -171,6 +192,12 @@ check_variables_mysql() {
     DB_SERVER_ZBX_PASS=${MYSQL_PASSWORD:-"zabbix"}
 
     DB_SERVER_DBNAME=${MYSQL_DATABASE:-"zabbix"}
+
+    if [ ! -n "${DB_SERVER_SOCKET}" ]; then
+        mysql_connect_args="-h ${DB_SERVER_HOST} -P ${DB_SERVER_PORT}"
+    else
+        mysql_connect_args="-S ${DB_SERVER_SOCKET}"
+    fi
 }
 
 db_tls_params() {
@@ -198,8 +225,12 @@ db_tls_params() {
 
 check_db_connect_mysql() {
     echo "********************"
-    echo "* DB_SERVER_HOST: ${DB_SERVER_HOST}"
-    echo "* DB_SERVER_PORT: ${DB_SERVER_PORT}"
+    if [ ! -n "${DB_SERVER_SOCKET}" ]; then
+        echo "* DB_SERVER_HOST: ${DB_SERVER_HOST}"
+        echo "* DB_SERVER_PORT: ${DB_SERVER_PORT}"
+    else
+        echo "* DB_SERVER_SOCKET: ${DB_SERVER_SOCKET}"
+    fi
     echo "* DB_SERVER_DBNAME: ${DB_SERVER_DBNAME}"
     if [ "${DEBUG_MODE,,}" == "true" ]; then
         if [ "${USE_DB_ROOT_USER}" == "true" ]; then
@@ -217,7 +248,7 @@ check_db_connect_mysql() {
 
     export MYSQL_PWD="${DB_SERVER_ROOT_PASS}"
 
-    while [ ! "$(mysqladmin ping -h ${DB_SERVER_HOST} -P ${DB_SERVER_PORT} -u ${DB_SERVER_ROOT_USER} \
+    while [ ! "$(mysqladmin ping $mysql_connect_args -u ${DB_SERVER_ROOT_USER} \
                 --silent --connect_timeout=10 $ssl_opts)" ]; do
         echo "**** MySQL server is not available. Waiting $WAIT_TIMEOUT seconds..."
         sleep $WAIT_TIMEOUT
@@ -234,12 +265,34 @@ mysql_query() {
 
     export MYSQL_PWD="${DB_SERVER_ROOT_PASS}"
 
-    result=$(mysql --silent --skip-column-names -h ${DB_SERVER_HOST} -P ${DB_SERVER_PORT} \
+    result=$(mysql --silent --skip-column-names $mysql_connect_args \
              -u ${DB_SERVER_ROOT_USER} -e "$query" $ssl_opts)
 
     unset MYSQL_PWD
 
     echo $result
+}
+
+exec_sql_file() {
+    sql_script=$1
+
+    local command="cat"
+
+    ssl_opts="$(db_tls_params)"
+
+    export MYSQL_PWD="${DB_SERVER_ROOT_PASS}"
+
+    if [ "${sql_script: -3}" == ".gz" ]; then
+        command="zcat"
+    fi
+
+    $command "$sql_script" | mysql --silent --skip-column-names \
+            --default-character-set=${DB_CHARACTER_SET} \
+            $mysql_connect_args \
+            -u ${DB_SERVER_ROOT_USER} $ssl_opts  \
+            ${DB_SERVER_DBNAME} 1>/dev/null
+
+    unset MYSQL_PWD
 }
 
 create_db_user_mysql() {
@@ -263,12 +316,23 @@ create_db_database_mysql() {
 
     if [ -z ${DB_EXISTS} ]; then
         echo "** Database '${DB_SERVER_DBNAME}' does not exist. Creating..."
-        mysql_query "CREATE DATABASE ${DB_SERVER_DBNAME} CHARACTER SET utf8mb4 COLLATE utf8mb4_bin" 1>/dev/null
+        mysql_query "CREATE DATABASE ${DB_SERVER_DBNAME} CHARACTER SET ${DB_CHARACTER_SET} COLLATE ${DB_CHARACTER_COLLATE}" 1>/dev/null
         # better solution?
         mysql_query "GRANT ALL PRIVILEGES ON $DB_SERVER_DBNAME. * TO '${DB_SERVER_ZBX_USER}'@'%'" 1>/dev/null
     else
         echo "** Database '${DB_SERVER_DBNAME}' already exists. Please be careful with database COLLATE!"
     fi
+}
+
+apply_db_scripts() {
+    db_scripts=$1
+
+    for sql_script in $db_scripts; do
+        [ -e "$sql_script" ] || continue
+        echo "** Processing additional '$sql_script' SQL script"
+
+        exec_sql_file "$sql_script"
+    done
 }
 
 create_db_schema_mysql() {
@@ -282,17 +346,9 @@ create_db_schema_mysql() {
     if [ -z "${ZBX_DB_VERSION}" ]; then
         echo "** Creating '${DB_SERVER_DBNAME}' schema in MySQL"
 
-        ssl_opts="$(db_tls_params)"
+        exec_sql_file "/usr/share/doc/zabbix-server-mysql/create.sql.gz"
 
-        export MYSQL_PWD="${DB_SERVER_ROOT_PASS}"
-
-        zcat /usr/share/doc/zabbix-server-mysql/create.sql.gz | mysql --silent --skip-column-names \
-                    --default-character-set=utf8mb4 \
-                    -h ${DB_SERVER_HOST} -P ${DB_SERVER_PORT} \
-                    -u ${DB_SERVER_ROOT_USER} $ssl_opts  \
-                    ${DB_SERVER_DBNAME} 1>/dev/null
-
-        unset MYSQL_PWD
+        apply_db_scripts "/var/lib/zabbix/dbscripts/*.sql"
     fi
 }
 
@@ -322,16 +378,28 @@ update_zbx_config() {
         update_config_var $ZBX_CONFIG "DBTLSCipher13" "${ZBX_DBTLSCIPHER13}"
     fi
 
-    update_config_var $ZBX_CONFIG "DBHost" "${DB_SERVER_HOST}"
+    if [ ! -n "${DB_SERVER_SOCKET}" ]; then
+        update_config_var $ZBX_CONFIG "DBHost" "${DB_SERVER_HOST}"
+        update_config_var $ZBX_CONFIG "DBPort" "${DB_SERVER_PORT}"
+    else
+        update_config_var $ZBX_CONFIG "DBHost"
+        update_config_var $ZBX_CONFIG "DBPort"
+    fi
+    update_config_var $ZBX_CONFIG "DBSocket" "${DB_SERVER_SOCKET}"
     update_config_var $ZBX_CONFIG "DBName" "${DB_SERVER_DBNAME}"
     update_config_var $ZBX_CONFIG "DBSchema" "${DB_SERVER_SCHEMA}"
-    update_config_var $ZBX_CONFIG "DBPort" "${DB_SERVER_PORT}"
 
     if [ -n "${VAULT_TOKEN}" ] && [ -n "${ZBX_VAULTURL}" ]; then
-        update_config_var $ZBX_CONFIG "VaultDBPath" "${ZBX_VAULTDBPATH}"
         update_config_var $ZBX_CONFIG "VaultURL" "${ZBX_VAULTURL}"
-        update_config_var $ZBX_CONFIG "DBUser"
-        update_config_var $ZBX_CONFIG "DBPassword"
+        update_config_var $ZBX_CONFIG "VaultDBPath" "${ZBX_VAULTDBPATH}"
+
+        if [ -n "${ZBX_VAULTDBPATH}" ]; then
+            update_config_var $ZBX_CONFIG "DBUser"
+            update_config_var $ZBX_CONFIG "DBPassword"
+        else
+            update_config_var $ZBX_CONFIG "DBUser" "${DB_SERVER_ZBX_USER}"
+            update_config_var $ZBX_CONFIG "DBPassword" "${DB_SERVER_ZBX_PASS}"
+        fi
     else
         update_config_var $ZBX_CONFIG "VaultDBPath"
         update_config_var $ZBX_CONFIG "VaultURL"
@@ -349,12 +417,10 @@ update_zbx_config() {
     update_config_var $ZBX_CONFIG "HistoryStorageTypes" "${ZBX_HISTORYSTORAGETYPES}"
     update_config_var $ZBX_CONFIG "HistoryStorageDateIndex" "${ZBX_HISTORYSTORAGEDATEINDEX}"
 
-    update_config_var $ZBX_CONFIG "DBSocket" "${DB_SERVER_SOCKET}"
-
     update_config_var $ZBX_CONFIG "StatsAllowedIP" "${ZBX_STATSALLOWEDIP}"
 
     update_config_var $ZBX_CONFIG "StartPollers" "${ZBX_STARTPOLLERS}"
-    update_config_var $ZBX_CONFIG "StartIPMIPollers" "${ZBX_IPMIPOLLERS}"
+    update_config_var $ZBX_CONFIG "StartIPMIPollers" "${ZBX_STARTIPMIPOLLERS}"
     update_config_var $ZBX_CONFIG "StartPollersUnreachable" "${ZBX_STARTPOLLERSUNREACHABLE}"
     update_config_var $ZBX_CONFIG "StartTrappers" "${ZBX_STARTTRAPPERS}"
     update_config_var $ZBX_CONFIG "StartPingers" "${ZBX_STARTPINGERS}"
@@ -400,8 +466,7 @@ update_zbx_config() {
 
     update_config_var $ZBX_CONFIG "HousekeepingFrequency" "${ZBX_HOUSEKEEPINGFREQUENCY}"
     update_config_var $ZBX_CONFIG "MaxHousekeeperDelete" "${ZBX_MAXHOUSEKEEPERDELETE}"
-    update_config_var $ZBX_CONFIG "ServiceManagerSyncFrequency" "${ZBX_PROBLEMHOUSEKEEPINGFREQUENCY}"
-    update_config_var $ZBX_CONFIG "SenderFrequency" "${ZBX_SENDERFREQUENCY}"
+    update_config_var $ZBX_CONFIG "ProblemHousekeepingFrequency" "${ZBX_PROBLEMHOUSEKEEPINGFREQUENCY}"
 
     update_config_var $ZBX_CONFIG "CacheSize" "${ZBX_CACHESIZE}"
 
@@ -431,7 +496,7 @@ update_zbx_config() {
     fi
 
     update_config_var $ZBX_CONFIG "FpingLocation" "/usr/bin/fping"
-    update_config_var $ZBX_CONFIG "Fping6Location" "/usr/bin/fping6"
+    update_config_var $ZBX_CONFIG "Fping6Location"
 
     update_config_var $ZBX_CONFIG "SSHKeyLocation" "$ZABBIX_USER_HOME_DIR/ssh_keys"
     update_config_var $ZBX_CONFIG "LogSlowQueries" "${ZBX_LOGSLOWQUERIES}"
@@ -446,22 +511,21 @@ update_zbx_config() {
     update_config_var $ZBX_CONFIG "LoadModulePath" "$ZABBIX_USER_HOME_DIR/modules/"
     update_config_multiple_var $ZBX_CONFIG "LoadModule" "${ZBX_LOADMODULE}"
 
-    update_config_var $ZBX_CONFIG "TLSCAFile" "${ZBX_TLSCAFILE}"
-    update_config_var $ZBX_CONFIG "TLSCRLFile" "${ZBX_TLSCRLFILE}"
+    file_process_from_env $ZBX_CONFIG "TLSCAFile" "${ZBX_TLSCAFILE}" "${ZBX_TLSCA}"
+    file_process_from_env $ZBX_CONFIG "TLSCRLFile" "${ZBX_TLSCRLFILE}" "${ZBX_TLSCRL}"
 
-    update_config_var $ZBX_CONFIG "TLSCertFile" "${ZBX_TLSCERTFILE}"
+    file_process_from_env $ZBX_CONFIG "TLSCertFile" "${ZBX_TLSCERTFILE}" "${ZBX_TLSCERT}"
     update_config_var $ZBX_CONFIG "TLSCipherAll" "${ZBX_TLSCIPHERALL}"
     update_config_var $ZBX_CONFIG "TLSCipherAll13" "${ZBX_TLSCIPHERALL13}"
     update_config_var $ZBX_CONFIG "TLSCipherCert" "${ZBX_TLSCIPHERCERT}"
     update_config_var $ZBX_CONFIG "TLSCipherCert13" "${ZBX_TLSCIPHERCERT13}"
     update_config_var $ZBX_CONFIG "TLSCipherPSK" "${ZBX_TLSCIPHERPSK}"
     update_config_var $ZBX_CONFIG "TLSCipherPSK13" "${ZBX_TLSCIPHERPSK13}"
-    update_config_var $ZBX_CONFIG "TLSKeyFile" "${ZBX_TLSKEYFILE}"
-
-    update_config_var $ZBX_CONFIG "TLSPSKIdentity" "${ZBX_TLSPSKIDENTITY}"
-    update_config_var $ZBX_CONFIG "TLSPSKFile" "${ZBX_TLSPSKFILE}"
+    file_process_from_env $ZBX_CONFIG "TLSKeyFile" "${ZBX_TLSKEYFILE}" "${ZBX_TLSKEY}"
 
     update_config_var $ZBX_CONFIG "ServiceManagerSyncFrequency" "${ZBX_SERVICEMANAGERSYNCFREQUENCY}"
+
+    update_config_var $ZBX_CONFIG "SMSDevices" "${ZBX_SMSDEVICES}"
 
     if [ "${ZBX_AUTOHANODENAME}" == 'fqdn' ] && [ ! -n "${ZBX_HANODENAME}" ]; then
         update_config_var $ZBX_CONFIG "HANodeName" "$(hostname -f)"
@@ -487,28 +551,46 @@ update_zbx_config() {
     fi
 }
 
-prepare_server() {
-    echo "** Preparing Zabbix server"
+clear_zbx_env() {
+    [[ "${ZBX_CLEAR_ENV}" == "false" ]] && return
+
+    for env_var in $(env | grep -E "^(ZBX|DB|MYSQL)_"); do
+        unset "${env_var%%=*}"
+    done
+}
+
+prepare_db() {
+    echo "** Preparing database"
 
     check_variables_mysql
     check_db_connect_mysql
     create_db_user_mysql
     create_db_database_mysql
     create_db_schema_mysql
+}
 
+prepare_server() {
+    echo "** Preparing Zabbix server"
+
+    prepare_db
     update_zbx_config
+    clear_zbx_env
 }
 
 #################################################
 
 if [ "${1#-}" != "$1" ]; then
     set -- /usr/sbin/zabbix_server "$@"
-    fi
+fi
 
 if [ "$1" == '/usr/sbin/zabbix_server' ]; then
     prepare_server
 fi
 
-exec "$@"
+if [ "$1" == "init_db_only" ]; then
+    prepare_db
+else
+    exec "$@"
+fi
 
 #################################################

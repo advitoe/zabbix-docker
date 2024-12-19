@@ -11,14 +11,14 @@ fi
 
 # Default Zabbix server host
 : ${ZBX_SERVER_HOST:="zabbix-server"}
-# Default Zabbix server port number
-: ${ZBX_SERVER_PORT:="10051"}
 
 # Default directories
 # User 'zabbix' home directory
 ZABBIX_USER_HOME_DIR="/var/lib/zabbix"
 # Configuration files directory
 ZABBIX_ETC_DIR="/etc/zabbix"
+# Internal directory for TLS related files, used when TLS*File specified as plain text values
+ZABBIX_INTERNAL_ENC_DIR="${ZABBIX_USER_HOME_DIR}/enc_internal"
 
 escape_spec_char() {
     local var_value=$1
@@ -108,6 +108,19 @@ update_config_multiple_var() {
     done
 }
 
+file_process_from_env() {
+    local config_path=$1
+    local var_name=$2
+    local file_name=$3
+    local var_value=$4
+
+    if [ ! -z "$var_value" ]; then
+        echo -n "$var_value" > "${ZABBIX_INTERNAL_ENC_DIR}/$var_name"
+        file_name="${ZABBIX_INTERNAL_ENC_DIR}/${var_name}"
+    fi
+    update_config_var $config_path "$var_name" "$file_name"
+}
+
 update_zbx_config() {
     echo "** Preparing Zabbix proxy configuration file"
 
@@ -115,7 +128,6 @@ update_zbx_config() {
 
     update_config_var $ZBX_CONFIG "ProxyMode" "${ZBX_PROXYMODE}"
     update_config_var $ZBX_CONFIG "Server" "${ZBX_SERVER_HOST}"
-    update_config_var $ZBX_CONFIG "ServerPort" "${ZBX_SERVER_PORT}"
     if [ -z "${ZBX_HOSTNAME}" ] && [ -n "${ZBX_HOSTNAMEITEM}" ]; then
         update_config_var $ZBX_CONFIG "Hostname" ""
         update_config_var $ZBX_CONFIG "HostnameItem" "${ZBX_HOSTNAMEITEM}"
@@ -140,18 +152,16 @@ update_zbx_config() {
     update_config_var $ZBX_CONFIG "LogRemoteCommands" "${ZBX_LOGREMOTECOMMANDS}"
 
     update_config_var $ZBX_CONFIG "DBHost"
-    update_config_var $ZBX_CONFIG "DBName" "/var/lib/zabbix/db_data/${ZBX_HOSTNAME:-"zabbix-proxy-sqlite3"}.sqlite"
+    : ${ZBX_USE_NODE_NAME_AS_DB_NAME:="false"}
+    if [ "${ZBX_USE_NODE_NAME_AS_DB_NAME,,}" == "false" ]; then
+        update_config_var $ZBX_CONFIG "DBName" "/var/lib/zabbix/db_data/${ZBX_HOSTNAME:-"zabbix-proxy-sqlite3"}.sqlite"
+    else
+        node_name=$(uname -n)
+        update_config_var $ZBX_CONFIG "DBName" "/var/lib/zabbix/db_data/$node_name.sqlite"
+    fi
     update_config_var $ZBX_CONFIG "DBUser"
     update_config_var $ZBX_CONFIG "DBPort"
     update_config_var $ZBX_CONFIG "DBPassword"
-
-    if [ -n "${VAULT_TOKEN}" ] && [ -n "${ZBX_VAULTURL}" ]; then
-        update_config_var $ZBX_CONFIG "VaultDBPath" "${ZBX_VAULTDBPATH}"
-        update_config_var $ZBX_CONFIG "VaultURL" "${ZBX_VAULTURL}"
-    else
-        update_config_var $ZBX_CONFIG "VaultDBPath"
-        update_config_var $ZBX_CONFIG "VaultURL"
-    fi
 
     update_config_var $ZBX_CONFIG "ProxyLocalBuffer" "${ZBX_PROXYLOCALBUFFER}"
     update_config_var $ZBX_CONFIG "ProxyOfflineBuffer" "${ZBX_PROXYOFFLINEBUFFER}"
@@ -163,7 +173,7 @@ update_zbx_config() {
     update_config_var $ZBX_CONFIG "StartPreprocessors" "${ZBX_STARTPREPROCESSORS}"
 
     update_config_var $ZBX_CONFIG "StartPollers" "${ZBX_STARTPOLLERS}"
-    update_config_var $ZBX_CONFIG "StartIPMIPollers" "${ZBX_IPMIPOLLERS}"
+    update_config_var $ZBX_CONFIG "StartIPMIPollers" "${ZBX_STARTIPMIPOLLERS}"
     update_config_var $ZBX_CONFIG "StartPollersUnreachable" "${ZBX_STARTPOLLERSUNREACHABLE}"
     update_config_var $ZBX_CONFIG "StartTrappers" "${ZBX_STARTTRAPPERS}"
     update_config_var $ZBX_CONFIG "StartPingers" "${ZBX_STARTPINGERS}"
@@ -216,7 +226,7 @@ update_zbx_config() {
     update_config_var $ZBX_CONFIG "ExternalScripts" "/usr/lib/zabbix/externalscripts"
 
     update_config_var $ZBX_CONFIG "FpingLocation" "/usr/bin/fping"
-    update_config_var $ZBX_CONFIG "Fping6Location" "/usr/bin/fping6"
+    update_config_var $ZBX_CONFIG "Fping6Location"
 
     update_config_var $ZBX_CONFIG "SSHKeyLocation" "$ZABBIX_USER_HOME_DIR/ssh_keys"
     update_config_var $ZBX_CONFIG "LogSlowQueries" "${ZBX_LOGSLOWQUERIES}"
@@ -229,22 +239,22 @@ update_zbx_config() {
 
     update_config_var $ZBX_CONFIG "TLSConnect" "${ZBX_TLSCONNECT}"
     update_config_var $ZBX_CONFIG "TLSAccept" "${ZBX_TLSACCEPT}"
-    update_config_var $ZBX_CONFIG "TLSCAFile" "${ZBX_TLSCAFILE}"
-    update_config_var $ZBX_CONFIG "TLSCRLFile" "${ZBX_TLSCRLFILE}"
+    file_process_from_env $ZBX_CONFIG "TLSCAFile" "${ZBX_TLSCAFILE}" "${ZBX_TLSCA}"
+    file_process_from_env $ZBX_CONFIG "TLSCRLFile" "${ZBX_TLSCRLFILE}" "${ZBX_TLSCRL}"
     update_config_var $ZBX_CONFIG "TLSServerCertIssuer" "${ZBX_TLSSERVERCERTISSUER}"
     update_config_var $ZBX_CONFIG "TLSServerCertSubject" "${ZBX_TLSSERVERCERTSUBJECT}"
 
-    update_config_var $ZBX_CONFIG "TLSCertFile" "${ZBX_TLSCERTFILE}"
+    file_process_from_env $ZBX_CONFIG "TLSCertFile" "${ZBX_TLSCERTFILE}" "${ZBX_TLSCERT}"
     update_config_var $ZBX_CONFIG "TLSCipherAll" "${ZBX_TLSCIPHERALL}"
     update_config_var $ZBX_CONFIG "TLSCipherAll13" "${ZBX_TLSCIPHERALL13}"
     update_config_var $ZBX_CONFIG "TLSCipherCert" "${ZBX_TLSCIPHERCERT}"
     update_config_var $ZBX_CONFIG "TLSCipherCert13" "${ZBX_TLSCIPHERCERT13}"
     update_config_var $ZBX_CONFIG "TLSCipherPSK" "${ZBX_TLSCIPHERPSK}"
     update_config_var $ZBX_CONFIG "TLSCipherPSK13" "${ZBX_TLSCIPHERPSK13}"
-    update_config_var $ZBX_CONFIG "TLSKeyFile" "${ZBX_TLSKEYFILE}"
+    file_process_from_env $ZBX_CONFIG "TLSKeyFile" "${ZBX_TLSKEYFILE}" "${ZBX_TLSKEY}"
 
     update_config_var $ZBX_CONFIG "TLSPSKIdentity" "${ZBX_TLSPSKIDENTITY}"
-    update_config_var $ZBX_CONFIG "TLSPSKFile" "${ZBX_TLSPSKFILE}"
+    file_process_from_env $ZBX_CONFIG "TLSPSKFile" "${ZBX_TLSPSKFILE}" "${ZBX_TLSPSK}"
 
     if [ "$(id -u)" != '0' ]; then
         update_config_var $ZBX_CONFIG "User" "$(whoami)"
@@ -253,10 +263,19 @@ update_zbx_config() {
     fi
 }
 
+clear_zbx_env() {
+    [[ "${ZBX_CLEAR_ENV}" == "false" ]] && return
+
+    for env_var in $(env | grep -E "^ZBX_"); do
+        unset "${env_var%%=*}"
+    done
+}
+
 prepare_proxy() {
     echo "Preparing Zabbix proxy"
 
     update_zbx_config
+    clear_zbx_env
 }
 
 #################################################

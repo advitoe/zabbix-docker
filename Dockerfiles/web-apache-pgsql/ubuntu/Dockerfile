@@ -1,11 +1,11 @@
 # syntax=docker/dockerfile:1
 ARG MAJOR_VERSION=6.0
-ARG ZBX_VERSION=${MAJOR_VERSION}.3
+ARG ZBX_VERSION=${MAJOR_VERSION}.37
 ARG BUILD_BASE_IMAGE=zabbix-build-mysql:ubuntu-${ZBX_VERSION}
 
-FROM ${BUILD_BASE_IMAGE} as builder
+FROM ${BUILD_BASE_IMAGE} AS builder
 
-FROM ubuntu:focal
+FROM ubuntu:noble
 
 ARG MAJOR_VERSION
 ARG ZBX_VERSION
@@ -21,7 +21,7 @@ LABEL org.opencontainers.image.authors="Alexey Pustovalov <alexey.pustovalov@zab
       org.opencontainers.image.source="${ZBX_SOURCES}" \
       org.opencontainers.image.title="Zabbix web-interface (Apache, PostgreSQL)" \
       org.opencontainers.image.url="https://zabbix.com/" \
-      org.opencontainers.image.vendor="Zabbix LLC" \
+      org.opencontainers.image.vendor="Zabbix SIA" \
       org.opencontainers.image.version="${ZBX_VERSION}"
 
 STOPSIGNAL SIGTERM
@@ -29,21 +29,23 @@ STOPSIGNAL SIGTERM
 COPY --from=builder ["/tmp/zabbix-${ZBX_VERSION}/ui", "/usr/share/zabbix"]
 COPY ["conf/etc/", "/etc/"]
 
-RUN set -eux && \
+RUN --mount=type=cache,target=/var/lib/apt/,sharing=locked \
+    set -eux && \
     echo "#!/bin/sh\nexit 101" > /usr/sbin/policy-rc.d && \
     INSTALL_PKGS="bash \
+            tzdata \
             apache2 \
             curl \
             libapache2-mod-php \
             ca-certificates \
             locales \
-            php7.4-bcmath \
-            php7.4-gd \
-            php7.4-json \
-            php7.4-ldap \
-            php7.4-mbstring \
-            php7.4-xml \
-            php7.4-pgsql \
+            libldap-common \
+            php8.3-bcmath \
+            php8.3-gd \
+            php8.3-ldap \
+            php8.3-mbstring \
+            php8.3-xml \
+            php8.3-pgsql \
             postgresql-client" && \
     apt-get -y update && \
     DEBIAN_FRONTEND=noninteractive apt-get -y \
@@ -57,7 +59,6 @@ RUN set -eux && \
             --system \
             --comment "Zabbix monitoring system" \
             -g zabbix \
-            -G root \
             --uid 1997 \
             --shell /sbin/nologin \
             --home-dir /var/lib/zabbix/ \
@@ -97,12 +98,11 @@ RUN set -eux && \
     chown --quiet -R zabbix:root /etc/zabbix/ /usr/share/zabbix/include/defines.inc.php /usr/share/zabbix/modules/ && \
     chgrp -R 0 /etc/zabbix/ /usr/share/zabbix/include/defines.inc.php /usr/share/zabbix/modules/ && \
     chmod -R g=u /etc/zabbix/ /usr/share/zabbix/include/defines.inc.php /usr/share/zabbix/modules/ && \
-    chown --quiet -R zabbix:root /etc/apache2/ /etc/php/7.4/ && \
-    chgrp -R 0 /etc/apache2/ /etc/php/7.4/ && \
-    chmod -R g=u /etc/apache2/ /etc/php/7.4/ && \
+    chown --quiet -R zabbix:root /etc/apache2/ /etc/php/8.3/ && \
+    chgrp -R 0 /etc/apache2/ /etc/php/8.3/ && \
+    chmod -R g=u /etc/apache2/ /etc/php/8.3/ && \
     apt-get -y autoremove && \
-    apt-get -y clean && \
-    rm -rf /var/lib/apt/lists/*
+    apt-get -y clean
 
 EXPOSE 8080/TCP 8443/TCP
 

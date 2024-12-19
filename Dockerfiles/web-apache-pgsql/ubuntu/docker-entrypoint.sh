@@ -23,6 +23,10 @@ fi
 ZABBIX_ETC_DIR="/etc/zabbix"
 # Web interface www-root directory
 ZABBIX_WWW_ROOT="/usr/share/zabbix"
+# Apache main configuration file
+HTTPD_CONF_FILE="/etc/apache2/apache2.conf"
+# Apache security configuration file
+HTTPD_SECURITY_CONF_FILE="/etc/apache2/conf-enabled/security.conf"
 
 # usage: file_env VAR [DEFAULT]
 # as example: file_env 'MYSQL_PASSWORD' 'zabbix'
@@ -97,7 +101,8 @@ check_db_connect() {
     fi
 
     if [ -n "${ZBX_DBTLSCONNECT}" ]; then
-        export PGSSLMODE=${ZBX_DBTLSCONNECT//_/-}
+        PGSSLMODE=${ZBX_DBTLSCONNECT//_/-}
+        export PGSSLMODE=${PGSSLMODE//required/require}
         export PGSSLROOTCERT=${ZBX_DBTLSCAFILE}
         export PGSSLCERT=${ZBX_DBTLSCERTFILE}
         export PGSSLKEY=${ZBX_DBTLSKEYFILE}
@@ -118,6 +123,8 @@ check_db_connect() {
 
 prepare_web_server() {
     APACHE_SITES_DIR="/etc/apache2/sites-enabled"
+
+    ln -sfT "$ZABBIX_ETC_DIR/apache_envvars" "/etc/apache2/envvars"
 
     echo "** Adding Zabbix virtual host (HTTP)"
     if [ -f "$ZABBIX_ETC_DIR/apache.conf" ]; then
@@ -187,6 +194,9 @@ prepare_zbx_web_config() {
     export ZBX_HISTORYSTORAGETYPES=${ZBX_HISTORYSTORAGETYPES:-"[]"}
 
     export ZBX_SSO_SETTINGS=${ZBX_SSO_SETTINGS:-""}
+    export ZBX_SSO_SP_KEY=${ZBX_SSO_SP_KEY}
+    export ZBX_SSO_SP_CERT=${ZBX_SSO_SP_CERT}
+    export ZBX_SSO_IDP_CERT=${ZBX_SSO_IDP_CERT}
 
     if [ -n "${ZBX_SESSION_NAME}" ]; then
         cp "$ZABBIX_WWW_ROOT/include/defines.inc.php" "/tmp/defines.inc.php_tmp"
@@ -194,16 +204,41 @@ prepare_zbx_web_config() {
         rm -f "/tmp/defines.inc.php_tmp"
     fi
 
+    : ${HTTP_INDEX_FILE:="index.php"}
+    sed -i \
+        -e "s/{HTTP_INDEX_FILE}/${HTTP_INDEX_FILE}/g" \
+    "$ZABBIX_ETC_DIR/apache.conf"
+
+    if [ -f "$ZABBIX_ETC_DIR/apache_ssl.conf" ]; then
+        sed -i \
+            -e "s/{HTTP_INDEX_FILE}/${HTTP_INDEX_FILE}/g" \
+        "$ZABBIX_ETC_DIR/apache_ssl.conf"
+    fi
+
     : ${ENABLE_WEB_ACCESS_LOG:="true"}
 
     if [ "${ENABLE_WEB_ACCESS_LOG,,}" == "false" ]; then
         sed -ri \
             -e 's!^(\s*CustomLog)\s+\S+!\1 /dev/null!g' \
-            "/etc/apache2/apache2.conf"
+            "$HTTPD_CONF_FILE"
         sed -ri \
             -e 's!^(\s*CustomLog)\s+\S+!\1 /dev/null!g' \
             "/etc/apache2/conf-available/other-vhosts-access-log.conf"
     fi
+
+    : ${EXPOSE_WEB_SERVER_INFO:="on"}
+    [[ "${EXPOSE_WEB_SERVER_INFO}" != "off" ]] && EXPOSE_WEB_SERVER_INFO="on"
+    export EXPOSE_WEB_SERVER_INFO=${EXPOSE_WEB_SERVER_INFO}
+
+    if [ "${EXPOSE_WEB_SERVER_INFO}" == "off" ]; then
+        sed -i \
+            -e "s/^\(\s*ServerTokens\).*\$/\1 Prod/g" \
+        "$HTTPD_SECURITY_CONF_FILE"
+    fi
+
+    sed -i \
+        -e "s/^\(\s*ServerSignature\).*\$/\1 ${EXPOSE_WEB_SERVER_INFO}/g" \
+    "$HTTPD_SECURITY_CONF_FILE"
 }
 
 #################################################

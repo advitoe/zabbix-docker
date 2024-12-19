@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
-FROM registry.access.redhat.com/ubi8/ubi-minimal
+FROM registry.access.redhat.com/ubi8/ubi-minimal:8.10
 
 ARG MAJOR_VERSION=6.0
-ARG RELEASE=3
-ARG ZBX_VERSION=${MAJOR_VERSION}.3
+ARG RELEASE=37
+ARG ZBX_VERSION=${MAJOR_VERSION}.37
 
 ENV TERM=xterm \
     ZBX_VERSION=${ZBX_VERSION} \
@@ -15,7 +15,7 @@ LABEL description="Prepared environment to build Zabbix components" \
       release="${RELEASE}" \
       summary="Zabbix build base" \
       url="https://www.zabbix.com/" \
-      vendor="Zabbix LLC" \
+      vendor="Zabbix SIA" \
       version="${MAJOR_VERSION}" \
       io.k8s.description="Prepared environment to build Zabbix components" \
       io.k8s.display-name="Zabbix build base" \
@@ -25,19 +25,24 @@ LABEL description="Prepared environment to build Zabbix components" \
       org.label-schema.name="zabbix-build-base-rhel" \
       org.label-schema.url="https://zabbix.com/" \
       org.label-schema.vcs-ref="${VCS_REF}" \
-      org.label-schema.vendor="Zabbix LLC"
+      org.label-schema.vendor="Zabbix SIA"
 
 COPY ["licenses", "/licenses"]
 
-RUN set -eux && \
+RUN --mount=type=tmpfs,target=/var/lib/dnf/ \
+    --mount=type=bind,target=/run/secrets/,src=secrets/ \
+    set -eux && \
     INSTALL_PKGS="autoconf \
             automake \
             bash \
             gcc \
+            go-toolset \
+            patch \
             pcre2-devel \
             libcurl-devel \
             libevent-devel \
             libssh-devel \
+            libmodbus-devel \
             libxml2-devel \
             openssl-devel \
             openldap-devel \
@@ -47,50 +52,31 @@ RUN set -eux && \
             OpenIPMI-devel \
             openldap-devel \
             sqlite-devel \
-            postgresql-devel \
-            java-1.8.0-openjdk-devel \
+            java-17-openjdk-devel \
             git \
-            wget \
-            tar \
             gettext \
-            unixODBC-devel" && \
-    microdnf -y module enable mysql && \
+            unixODBC-devel \
+            zlib-devel" && \
+    curl --tlsv1.2 -sSf -L https://dl.fedoraproject.org/pub/epel/epel-release-latest-8.noarch.rpm -o /tmp/epel-release-latest-8.noarch.rpm && \
+    rpm -ivh /tmp/epel-release-latest-8.noarch.rpm && \
+    rm -rf /tmp/epel-release-latest-8.noarch.rpm && \
+    microdnf -y module enable \
+        --disablerepo "*" \
+        --enablerepo "rhel-8-for-x86_64-appstream-rpms" \
+        --setopt=install_weak_deps=0 \
+        --setopt=keepcache=0 \
+        mysql && \
     microdnf -y install \
             --disablerepo "*" \
-            --enablerepo "ubi-8-baseos" \
-            --enablerepo "ubi-8-appstream" \
+            --enablerepo "ubi-8-baseos-rpms" \
+            --enablerepo "ubi-8-appstream-rpms" \
             --enablerepo "rhel-8-for-x86_64-baseos-rpms" \
             --enablerepo "rhel-8-for-x86_64-appstream-rpms" \
             --enablerepo "codeready-builder-for-rhel-8-x86_64-rpms" \
+            --enablerepo "epel" \
             --setopt=install_weak_deps=0 \
+            --setopt=keepcache=0 \
             --best \
             --setopt=tsflags=nodocs \
         ${INSTALL_PKGS} && \
-    case "$ARCH_SUFFIX" in \
-        x86_64) \
-            url='https://dl.google.com/go/go1.17.8.linux-amd64.tar.gz'; \
-            sha256='980e65a863377e69fd9b67df9d8395fd8e93858e7a24c9f55803421e453f4f99'; \
-            ;; \
-        aarch64) \
-            url='https://dl.google.com/go/go1.17.8.linux-arm64.tar.gz'; \
-            sha256='57a9171682e297df1a5bd287be056ed0280195ad079af90af16dcad4f64710cb'; \
-            ;; \
-        ppc64le) \
-            url='https://dl.google.com/go/go1.17.8.linux-ppc64le.tar.gz'; \
-            sha256='2077dd2fc57a74b0630b0c239ae4e3114607311778effd43fcfe5174133ee188'; \
-            ;; \
-        *) echo "Unknown ARCH_SUFFIX=${ARCH_SUFFIX-}"; exit 1 ;; \
-    esac; \
-    wget -O go.tgz.asc "$url.asc" && \
-    wget -O go.tgz "$url" --progress=dot:giga && \
-    echo "$sha256 *go.tgz" | sha256sum -c - && \
-    GNUPGHOME="$(mktemp -d)"; export GNUPGHOME; \
-    gpg --batch --keyserver keyserver.ubuntu.com --recv-keys 'EB4C 1BFD 4F04 2F6D DDCC EC91 7721 F63B D38B 4796' && \
-    gpg --batch --verify go.tgz.asc go.tgz && \
-    gpgconf --kill all && \
-    rm -rf "$GNUPGHOME" go.tgz.asc && \
-    tar -C /usr/local -xzf go.tgz && \
-    rm go.tgz && \
-    microdnf -y clean all && \
-    rm -rf /var/cache/yum /var/lib/yum/yumdb/* /usr/lib/udev/hwdb.d/* && \
-    rm -rf /var/cache/dnf /etc/udev/hwdb.bin /root/.pki
+    microdnf -y clean all

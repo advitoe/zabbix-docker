@@ -23,6 +23,10 @@ fi
 ZABBIX_ETC_DIR="/etc/zabbix"
 # Web interface www-root directory
 ZABBIX_WWW_ROOT="/usr/share/zabbix"
+# Apache main configuration file
+HTTPD_CONF_FILE="/etc/apache2/apache2.conf"
+# Apache security configuration file
+HTTPD_SECURITY_CONF_FILE="/etc/apache2/conf-enabled/security.conf"
 
 # usage: file_env VAR [DEFAULT]
 # as example: file_env 'MYSQL_PASSWORD' 'zabbix'
@@ -57,7 +61,11 @@ file_env() {
 
 # Check prerequisites for MySQL database
 check_variables() {
-    : ${DB_SERVER_HOST:="mysql-server"}
+    if [ ! -n "${DB_SERVER_SOCKET}" ]; then
+        : ${DB_SERVER_HOST:="mysql-server"}
+    else
+        DB_SERVER_HOST="localhost"
+    fi
     : ${DB_SERVER_PORT:="3306"}
 
     file_env MYSQL_USER
@@ -67,6 +75,12 @@ check_variables() {
     DB_SERVER_ZBX_PASS=${MYSQL_PASSWORD:-"zabbix"}
 
     DB_SERVER_DBNAME=${MYSQL_DATABASE:-"zabbix"}
+
+    if [ ! -n "${DB_SERVER_SOCKET}" ]; then
+        mysql_connect_args="-h ${DB_SERVER_HOST} -P ${DB_SERVER_PORT}"
+    else
+        mysql_connect_args="-S ${DB_SERVER_SOCKET}"
+    fi
 }
 
 db_tls_params() {
@@ -95,6 +109,9 @@ check_db_connect() {
     echo "********************"
     echo "* DB_SERVER_HOST: ${DB_SERVER_HOST}"
     echo "* DB_SERVER_PORT: ${DB_SERVER_PORT}"
+    if [ -n "${DB_SERVER_SOCKET}" ]; then
+        echo "* DB_SERVER_SOCKET: ${DB_SERVER_SOCKET}"
+    fi
     echo "* DB_SERVER_DBNAME: ${DB_SERVER_DBNAME}"
     if [ "${DEBUG_MODE,,}" == "true" ]; then
         echo "* DB_SERVER_ZBX_USER: ${DB_SERVER_ZBX_USER}"
@@ -108,7 +125,7 @@ check_db_connect() {
 
     export MYSQL_PWD="${DB_SERVER_ZBX_PASS}"
 
-    while [ ! "$(mysqladmin ping -h ${DB_SERVER_HOST} -P ${DB_SERVER_PORT} -u ${DB_SERVER_ZBX_USER} \
+    while [ ! "$(mysqladmin ping $mysql_connect_args -u ${DB_SERVER_ZBX_USER} \
                 --silent --connect_timeout=10 $ssl_opts)" ]; do
         echo "**** MySQL server is not available. Waiting $WAIT_TIMEOUT seconds..."
         sleep $WAIT_TIMEOUT
@@ -119,6 +136,8 @@ check_db_connect() {
 
 prepare_web_server() {
     APACHE_SITES_DIR="/etc/apache2/sites-enabled"
+
+    ln -sfT "$ZABBIX_ETC_DIR/apache_envvars" "/etc/apache2/envvars"
 
     echo "** Adding Zabbix virtual host (HTTP)"
     if [ -f "$ZABBIX_ETC_DIR/apache.conf" ]; then
@@ -184,6 +203,9 @@ prepare_zbx_web_config() {
     export ZBX_HISTORYSTORAGETYPES=${ZBX_HISTORYSTORAGETYPES:-"[]"}
 
     export ZBX_SSO_SETTINGS=${ZBX_SSO_SETTINGS:-""}
+    export ZBX_SSO_SP_KEY=${ZBX_SSO_SP_KEY}
+    export ZBX_SSO_SP_CERT=${ZBX_SSO_SP_CERT}
+    export ZBX_SSO_IDP_CERT=${ZBX_SSO_IDP_CERT}
 
     if [ -n "${ZBX_SESSION_NAME}" ]; then
         cp "$ZABBIX_WWW_ROOT/include/defines.inc.php" "/tmp/defines.inc.php_tmp"
@@ -191,16 +213,41 @@ prepare_zbx_web_config() {
         rm -f "/tmp/defines.inc.php_tmp"
     fi
 
+    : ${HTTP_INDEX_FILE:="index.php"}
+    sed -i \
+        -e "s/{HTTP_INDEX_FILE}/${HTTP_INDEX_FILE}/g" \
+    "$ZABBIX_ETC_DIR/apache.conf"
+
+    if [ -f "$ZABBIX_ETC_DIR/apache_ssl.conf" ]; then
+        sed -i \
+            -e "s/{HTTP_INDEX_FILE}/${HTTP_INDEX_FILE}/g" \
+        "$ZABBIX_ETC_DIR/apache_ssl.conf"
+    fi
+
     : ${ENABLE_WEB_ACCESS_LOG:="true"}
 
     if [ "${ENABLE_WEB_ACCESS_LOG,,}" == "false" ]; then
         sed -ri \
             -e 's!^(\s*CustomLog)\s+\S+!\1 /dev/null!g' \
-            "/etc/apache2/apache2.conf"
+            "$HTTPD_CONF_FILE"
         sed -ri \
             -e 's!^(\s*CustomLog)\s+\S+!\1 /dev/null!g' \
             "/etc/apache2/conf-available/other-vhosts-access-log.conf"
     fi
+
+    : ${EXPOSE_WEB_SERVER_INFO:="on"}
+    [[ "${EXPOSE_WEB_SERVER_INFO}" != "off" ]] && EXPOSE_WEB_SERVER_INFO="on"
+    export EXPOSE_WEB_SERVER_INFO=${EXPOSE_WEB_SERVER_INFO}
+
+    if [ "${EXPOSE_WEB_SERVER_INFO}" == "off" ]; then
+        sed -i \
+            -e "s/^\(\s*ServerTokens\).*\$/\1 Prod/g" \
+        "$HTTPD_SECURITY_CONF_FILE"
+    fi
+
+    sed -i \
+        -e "s/^\(\s*ServerSignature\).*\$/\1 ${EXPOSE_WEB_SERVER_INFO}/g" \
+    "$HTTPD_SECURITY_CONF_FILE"
 }
 
 #################################################

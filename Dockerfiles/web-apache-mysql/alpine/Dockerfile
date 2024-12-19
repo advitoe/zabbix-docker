@@ -1,11 +1,11 @@
 # syntax=docker/dockerfile:1
 ARG MAJOR_VERSION=6.0
-ARG ZBX_VERSION=${MAJOR_VERSION}.3
+ARG ZBX_VERSION=${MAJOR_VERSION}.37
 ARG BUILD_BASE_IMAGE=zabbix-build-mysql:alpine-${ZBX_VERSION}
 
-FROM ${BUILD_BASE_IMAGE} as builder
+FROM ${BUILD_BASE_IMAGE} AS builder
 
-FROM alpine:3.15
+FROM alpine:3.21
 
 ARG MAJOR_VERSION
 ARG ZBX_VERSION
@@ -21,7 +21,7 @@ LABEL org.opencontainers.image.authors="Alexey Pustovalov <alexey.pustovalov@zab
       org.opencontainers.image.source="${ZBX_SOURCES}" \
       org.opencontainers.image.title="Zabbix web-interface (Apache, MySQL)" \
       org.opencontainers.image.url="https://zabbix.com/" \
-      org.opencontainers.image.vendor="Zabbix LLC" \
+      org.opencontainers.image.vendor="Zabbix SIA" \
       org.opencontainers.image.version="${ZBX_VERSION}"
 
 STOPSIGNAL SIGTERM
@@ -31,26 +31,27 @@ COPY ["conf/etc/", "/etc/"]
 
 RUN set -eux && \
     INSTALL_PKGS="bash \
+            tzdata \
             apache2 \
             curl \
             mariadb-client \
             mariadb-connector-c \
-            php7-apache2 \
-            php7-bcmath \
-            php7-ctype \
-            php7-gd \
-            php7-gettext \
-            php7-json \
-            php7-ldap \
-            php7-mbstring \
-            php7-mysqli \
-            php7-session \
-            php7-simplexml \
-            php7-sockets \
-            php7-fileinfo \
-            php7-xmlreader \
-            php7-xmlwriter \
-            php7-openssl" && \
+            php83-apache2 \
+            php83-bcmath \
+            php83-ctype \
+            php83-gd \
+            php83-gettext \
+            php83-json \
+            php83-ldap \
+            php83-mbstring \
+            php83-mysqli \
+            php83-session \
+            php83-simplexml \
+            php83-sockets \
+            php83-fileinfo \
+            php83-xmlreader \
+            php83-xmlwriter \
+            php83-openssl" && \
     apk add \
             --no-cache \
             --clean-protected \
@@ -73,7 +74,6 @@ RUN set -eux && \
             --shell /sbin/nologin \
             --home /var/lib/zabbix/ \
         zabbix && \
-    adduser zabbix root && \
     mkdir -p /etc/zabbix && \
     mkdir -p /etc/zabbix/web && \
     mkdir -p /etc/zabbix/web/certs && \
@@ -99,10 +99,9 @@ RUN set -eux && \
     chown --quiet -R zabbix:root /etc/zabbix/ /usr/share/zabbix/include/defines.inc.php /usr/share/zabbix/modules/ && \
     chgrp -R 0 /etc/zabbix/ /usr/share/zabbix/include/defines.inc.php /usr/share/zabbix/modules/ && \
     chmod -R g=u /etc/zabbix/ /usr/share/zabbix/include/defines.inc.php /usr/share/zabbix/modules/ && \
-    chown --quiet -R zabbix:root /etc/apache2/ /etc/php7/ && \
-    chgrp -R 0 /etc/apache2/ /etc/php7/ && \
-    chmod -R g=u /etc/apache2/ /etc/php7/ && \
-    rm -rf /var/cache/apk/*
+    chown --quiet -R zabbix:root /etc/apache2/ /etc/php83/ && \
+    chgrp -R 0 /etc/apache2/ /etc/php83/ && \
+    chmod -R g=u /etc/apache2/ /etc/php83/
 
 EXPOSE 8080/TCP 8443/TCP
 

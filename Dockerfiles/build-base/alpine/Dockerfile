@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1
-FROM alpine:3.15
+FROM alpine:3.21
 
 ARG MAJOR_VERSION=6.0
-ARG ZBX_VERSION=${MAJOR_VERSION}.3
+ARG ZBX_VERSION=${MAJOR_VERSION}.37
 
 ENV TERM=xterm \
     ZBX_VERSION=${ZBX_VERSION} \
@@ -15,14 +15,28 @@ LABEL org.opencontainers.image.authors="Alexey Pustovalov <alexey.pustovalov@zab
       org.opencontainers.image.licenses="GPL v2.0" \
       org.opencontainers.image.title="Zabbix build base" \
       org.opencontainers.image.url="https://zabbix.com/" \
-      org.opencontainers.image.vendor="Zabbix LLC" \
+      org.opencontainers.image.vendor="Zabbix SIA" \
       org.opencontainers.image.version="${ZBX_VERSION}"
 
 RUN set -eux && \
+    ARCH_SUFFIX="$(cat /etc/apk/arch)"; \
+    case "$ARCH_SUFFIX" in \
+        x86) \
+            openjdk_packages='openjdk8 openjdk8-jre-base'; \
+            ;; \
+        armv7) \
+            openjdk_packages='openjdk8 openjdk8-jre-base'; \
+            ;; \
+        riscv64) \
+            openjdk_packages='openjdk21 openjdk21-jre-headless'; \
+            ;; \
+        *) openjdk_packages='openjdk17 openjdk17-jre-headless'; \
+    esac; \
     INSTALL_PKGS="bash \
             autoconf \
             automake \
             coreutils \
+            curl \
             curl-dev \
             libevent-dev \
             libssh-dev \
@@ -34,18 +48,18 @@ RUN set -eux && \
             openipmi-dev \
             openldap-dev \
             openssl-dev \
+            patch \
             pcre2-dev \
-            postgresql-dev \
-            openjdk8 \
+            libpq-dev \
             gettext \
             git \
             g++ \
             go \
             make \
-            openjdk8-jre-base \
-            unixodbc-dev" && \
+            $openjdk_packages \
+            unixodbc-dev \
+            zlib-dev" && \
     apk add \
             --no-cache \
             --clean-protected \
-        ${INSTALL_PKGS} && \
-    rm -rf /var/cache/apk/*
+        ${INSTALL_PKGS}
